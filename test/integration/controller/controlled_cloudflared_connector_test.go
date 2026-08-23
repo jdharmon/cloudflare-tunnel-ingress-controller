@@ -20,6 +20,7 @@ var _ cloudflarecontroller.TunnelClientInterface = &MockTunnelClient{}
 
 type MockTunnelClient struct {
 	FetchTunnelTokenFunc func(ctx context.Context) (string, error)
+	FetchCount           int
 }
 
 func (m *MockTunnelClient) PutExposures(ctx context.Context, exposures []exposure.Exposure) error {
@@ -31,6 +32,7 @@ func (m *MockTunnelClient) TunnelDomain() string {
 }
 
 func (m *MockTunnelClient) FetchTunnelToken(ctx context.Context) (string, error) {
+	m.FetchCount++
 	return m.FetchTunnelTokenFunc(ctx)
 }
 
@@ -279,7 +281,7 @@ var _ = Describe("CreateOrUpdateControlledCloudflared", func() {
 		Expect(command).To(ContainElement("4"))
 	})
 
-	It("should update the secret and restart cloudflared when token changes", func() {
+	It("should refetch and restart cloudflared when the token secret is deleted", func() {
 		// Prepare
 		namespaceFixtures := fixtures.NewKubernetesNamespaceFixtures(testNamespace, kubeClient)
 		ns, err := namespaceFixtures.Start(ctx)
@@ -319,14 +321,18 @@ var _ = Describe("CreateOrUpdateControlledCloudflared", func() {
 		initialSecretVersion := deployment.Spec.Template.Annotations["strrl.dev/cloudflare-tunnel-token-secret-version"]
 		Expect(initialSecretVersion).To(Equal(secret.ResourceVersion))
 
-		// Change token
+		// Simulate an operator rotating the tunnel token: they delete the
+		// Secret to force this controller to fetch a fresh one, since the
+		// controller no longer polls Cloudflare for changes on its own.
+		err = kubeClient.Delete(ctx, secret)
+		Expect(err).NotTo(HaveOccurred())
 		currentToken = "updated-token"
 
 		// Act
 		err = controller.CreateOrUpdateControlledCloudflared(ctx, kubeClient, mockTunnelClient, ns, baseConfig())
 		Expect(err).NotTo(HaveOccurred())
 
-		// Assert secret was updated
+		// Assert secret was recreated with the new token
 		err = kubeClient.Get(ctx, types.NamespacedName{
 			Namespace: ns,
 			Name:      "controlled-cloudflared-token",
@@ -342,5 +348,34 @@ var _ = Describe("CreateOrUpdateControlledCloudflared", func() {
 		updatedSecretVersion := deployment.Spec.Template.Annotations["strrl.dev/cloudflare-tunnel-token-secret-version"]
 		Expect(updatedSecretVersion).To(Equal(secret.ResourceVersion))
 		Expect(updatedSecretVersion).NotTo(Equal(initialSecretVersion))
+	})
+
+	It("should not refetch the tunnel token when the secret already exists", func() {
+		// Prepare
+		namespaceFixtures := fixtures.NewKubernetesNamespaceFixtures(testNamespace, kubeClient)
+		ns, err := namespaceFixtures.Start(ctx)
+		Expect(err).NotTo(HaveOccurred())
+
+		defer func() {
+			err := namespaceFixtures.Stop(ctx)
+			Expect(err).NotTo(HaveOccurred())
+		}()
+
+		mockTunnelClient := &MockTunnelClient{
+			FetchTunnelTokenFunc: func(ctx context.Context) (string, error) {
+				return "mock-token", nil
+			},
+		}
+
+		err = controller.CreateOrUpdateControlledCloudflared(ctx, kubeClient, mockTunnelClient, ns, baseConfig())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mockTunnelClient.FetchCount).To(Equal(1))
+
+		// Act: reconcile again with the secret still in place
+		err = controller.CreateOrUpdateControlledCloudflared(ctx, kubeClient, mockTunnelClient, ns, baseConfig())
+		Expect(err).NotTo(HaveOccurred())
+
+		// Assert Cloudflare was not asked for the token again
+		Expect(mockTunnelClient.FetchCount).To(Equal(1))
 	})
 })

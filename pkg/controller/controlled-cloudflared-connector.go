@@ -143,9 +143,15 @@ func CreateOrUpdateControlledCloudflared(
 		}
 	}
 
-	token, err := tunnelClient.FetchTunnelToken(ctx)
+	token, tokenExists, err := getExistingTunnelToken(ctx, kubeClient, namespace)
 	if err != nil {
-		return errors.Wrap(err, "fetch tunnel token")
+		return errors.Wrap(err, "get existing tunnel token secret")
+	}
+	if !tokenExists {
+		token, err = tunnelClient.FetchTunnelToken(ctx)
+		if err != nil {
+			return errors.Wrap(err, "fetch tunnel token")
+		}
 	}
 
 	tokenSecretVersion, err := createOrUpdateTunnelTokenSecret(ctx, kubeClient, namespace, token, config.Owner)
@@ -230,6 +236,24 @@ func CreateOrUpdateControlledCloudflared(
 	}
 	logger.Info("Created controlled-cloudflared-connector deployment", "namespace", namespace)
 	return nil
+}
+
+// getExistingTunnelToken reads the tunnel token already stored in the
+// connector's Secret, if any. A missing Secret or empty token means the
+// caller must fetch a fresh one from Cloudflare — this is also how an
+// operator forces a refetch after manually rotating the tunnel token:
+// delete the Secret.
+func getExistingTunnelToken(ctx context.Context, kubeClient client.Client, namespace string) (token string, exists bool, err error) {
+	secret := &v1.Secret{}
+	getErr := kubeClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: tunnelTokenSecretName}, secret)
+	if apierrors.IsNotFound(getErr) {
+		return "", false, nil
+	}
+	if getErr != nil {
+		return "", false, getErr
+	}
+	token = string(secret.Data[tunnelTokenSecretKey])
+	return token, token != "", nil
 }
 
 func createOrUpdateTunnelTokenSecret(
