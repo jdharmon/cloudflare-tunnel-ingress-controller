@@ -256,7 +256,7 @@ func Test_syncDNSRecord(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "always update existing record with TXT",
+			name: "skip update when existing record already matches",
 			args: args{
 				logger: logr.Discard(),
 				exposures: []exposure.Exposure{
@@ -285,21 +285,46 @@ func Test_syncDNSRecord(t *testing.T) {
 				tunnelName: "tunnel-in-test",
 			},
 			wantCreate: nil,
-			wantUpdate: []DNSOperationUpdate{
-				{
-					OldRecord: cloudflare.DNSRecord{
+			wantUpdate: nil,
+			wantDelete: nil,
+			wantErr:    false,
+		},
+		{
+			name: "update TXT only when its content is stale but CNAME already matches",
+			args: args{
+				logger: logr.Discard(),
+				exposures: []exposure.Exposure{
+					{
+						Hostname:      "test.example.com",
+						ServiceTarget: "http://10.0.0.1:233",
+						PathPrefix:    "/",
+						IsDeleted:     false,
+					},
+				},
+				existedCNAMERecords: []cloudflare.DNSRecord{
+					{
 						Name:    "test.example.com",
 						Type:    "CNAME",
 						Content: WhateverTunnelDomain,
 					},
-					Type:    "CNAME",
-					Content: WhateverTunnelDomain,
 				},
+				existedTXTRecords: []cloudflare.DNSRecord{
+					{
+						Name:    "_ctic_managed.test.example.com",
+						Type:    "TXT",
+						Content: `{"controller":"strrl.dev/cloudflare-tunnel-ingress-controller","tunnel":"stale-tunnel-name"}`,
+					},
+				},
+				tunnelId:   WhateverTunnelId,
+				tunnelName: "tunnel-in-test",
+			},
+			wantCreate: nil,
+			wantUpdate: []DNSOperationUpdate{
 				{
 					OldRecord: cloudflare.DNSRecord{
 						Name:    "_ctic_managed.test.example.com",
 						Type:    "TXT",
-						Content: `{"controller":"strrl.dev/cloudflare-tunnel-ingress-controller","tunnel":"tunnel-in-test"}`,
+						Content: `{"controller":"strrl.dev/cloudflare-tunnel-ingress-controller","tunnel":"stale-tunnel-name"}`,
 					},
 					Type:    "TXT",
 					Content: `{"controller":"strrl.dev/cloudflare-tunnel-ingress-controller","tunnel":"tunnel-in-test"}`,

@@ -110,25 +110,39 @@ func (i *IngressController) Reconcile(ctx context.Context, request reconcile.Req
 	}
 
 	hostname := i.tunnelClient.TunnelDomain()
-	newOrigin := origin.DeepCopy()
-	matchesHostname := func(ingress networkingv1.IngressLoadBalancerIngress) bool {
-		return ingress.Hostname == hostname
-	}
-	if !slices.ContainsFunc(origin.Status.LoadBalancer.Ingress, matchesHostname) {
-		newOrigin.Status.LoadBalancer.Ingress = []networkingv1.IngressLoadBalancerIngress{{
-			Hostname: hostname,
-			Ports: []networkingv1.IngressPortStatus{{
-				Protocol: v1.ProtocolTCP,
-				Port:     443,
-			}},
-		}}
-	}
-	if err = i.kubeClient.Status().Update(ctx, newOrigin); err != nil {
-		return reconcile.Result{}, errors.Wrapf(err, "failed to update ingress status")
+	if newOrigin, needsUpdate := withTunnelLoadBalancerStatus(origin, hostname); needsUpdate {
+		if err = i.kubeClient.Status().Update(ctx, newOrigin); err != nil {
+			return reconcile.Result{}, errors.Wrapf(err, "failed to update ingress status")
+		}
 	}
 
 	i.logger.V(3).Info("reconcile completed", "triggered-by", request.NamespacedName)
 	return reconcile.Result{}, nil
+}
+
+// withTunnelLoadBalancerStatus returns origin with its LoadBalancer status set
+// to hostname, and whether that actually changes anything. Callers must skip
+// the Status().Update() call when needsUpdate is false: any write bumps the
+// Ingress's resourceVersion even when the content is unchanged, and this
+// controller watches Ingress objects, so an unconditional update would
+// re-trigger its own Reconcile forever.
+func withTunnelLoadBalancerStatus(origin networkingv1.Ingress, hostname string) (newOrigin *networkingv1.Ingress, needsUpdate bool) {
+	matchesHostname := func(ingress networkingv1.IngressLoadBalancerIngress) bool {
+		return ingress.Hostname == hostname
+	}
+	if slices.ContainsFunc(origin.Status.LoadBalancer.Ingress, matchesHostname) {
+		return nil, false
+	}
+
+	newOrigin = origin.DeepCopy()
+	newOrigin.Status.LoadBalancer.Ingress = []networkingv1.IngressLoadBalancerIngress{{
+		Hostname: hostname,
+		Ports: []networkingv1.IngressPortStatus{{
+			Protocol: v1.ProtocolTCP,
+			Port:     443,
+		}},
+	}}
+	return newOrigin, true
 }
 
 func (i *IngressController) isControlledByThisController(ctx context.Context, target networkingv1.Ingress) (bool, error) {

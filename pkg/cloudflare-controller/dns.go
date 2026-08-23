@@ -101,6 +101,7 @@ func syncDNSRecord(
 		}
 
 		// Handle CNAME record
+		expectedCNAMEContent := tunnelDomain(tunnelId)
 		containsCNAME, oldCNAME := dnsRecordsContainsHostname(existedCNAMERecords, item.Hostname)
 		if containsCNAME {
 			// Check if this record is managed by this controller
@@ -111,27 +112,35 @@ func syncDNSRecord(
 					"existing-content", oldCNAME.Content,
 				)
 			}
-			toUpdate = append(toUpdate, DNSOperationUpdate{
-				OldRecord: oldCNAME,
-				Type:      "CNAME",
-				Content:   tunnelDomain(tunnelId),
-			})
+			// Skip the update when the record already has the desired content:
+			// an API call here is not a no-op even if nothing changes, and this
+			// runs on every reconcile, so a missing check here means every
+			// reconcile re-pushes identical records to Cloudflare's API.
+			if oldCNAME.Content != expectedCNAMEContent {
+				toUpdate = append(toUpdate, DNSOperationUpdate{
+					OldRecord: oldCNAME,
+					Type:      "CNAME",
+					Content:   expectedCNAMEContent,
+				})
+			}
 		} else {
 			toCreate = append(toCreate, DNSOperationCreate{
 				Hostname: item.Hostname,
 				Type:     "CNAME",
-				Content:  tunnelDomain(tunnelId),
+				Content:  expectedCNAMEContent,
 			})
 		}
 
 		// Handle TXT record
 		containsTXT, oldTXT := dnsRecordsContainsHostname(existedTXTRecords, txtRecordName)
 		if containsTXT {
-			toUpdate = append(toUpdate, DNSOperationUpdate{
-				OldRecord: oldTXT,
-				Type:      "TXT",
-				Content:   expectedTXTContent,
-			})
+			if oldTXT.Content != expectedTXTContent {
+				toUpdate = append(toUpdate, DNSOperationUpdate{
+					OldRecord: oldTXT,
+					Type:      "TXT",
+					Content:   expectedTXTContent,
+				})
+			}
 		} else {
 			toCreate = append(toCreate, DNSOperationCreate{
 				Hostname: txtRecordName,
