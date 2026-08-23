@@ -140,6 +140,7 @@ func FromIngressToExposure(ctx context.Context, logger logr.Logger, kubeClient c
 
 			var supportedPathTypes = map[networkingv1.PathType]struct{}{
 				networkingv1.PathTypePrefix:                 {},
+				networkingv1.PathTypeExact:                  {},
 				networkingv1.PathTypeImplementationSpecific: {},
 			}
 
@@ -151,10 +152,19 @@ func FromIngressToExposure(ctx context.Context, logger logr.Logger, kubeClient c
 				return nil, errors.Errorf("path type in ingress %s/%s is %s, which is not supported", ingress.GetNamespace(), ingress.GetName(), *path.PathType)
 			}
 
+			// ImplementationSpecific is intentionally treated as Prefix: Kubernetes
+			// leaves its semantics up to the implementation, and prefix-like
+			// matching was already this controller's de facto behavior for it.
+			exposurePathType := exposure.PathTypePrefix
+			if *path.PathType == networkingv1.PathTypeExact {
+				exposurePathType = exposure.PathTypeExact
+			}
+
 			result = append(result, exposure.Exposure{
 				Hostname:               hostname,
 				ServiceTarget:          fmt.Sprintf("%s://%s:%d", scheme, host, port),
 				PathPrefix:             path.Path,
+				PathType:               exposurePathType,
 				IsDeleted:              isDeleted,
 				ProxySSLVerifyEnabled:  proxySSLVerifyEnabled,
 				HTTPHostHeader:         httpHostHeader,

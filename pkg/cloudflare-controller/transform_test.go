@@ -2,7 +2,9 @@ package cloudflarecontroller
 
 import (
 	"context"
+	"fmt"
 	"reflect"
+	"regexp"
 	"testing"
 	"time"
 
@@ -41,12 +43,13 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 					Hostname:      "ingress.example.com",
 					ServiceTarget: "http://10.0.0.1:80",
 					PathPrefix:    "/",
+					PathType:      exposure.PathTypePrefix,
 					IsDeleted:     false,
 				},
 			},
 			want: &cloudflare.UnvalidatedIngressRule{
 				Hostname:      "ingress.example.com",
-				Path:          "/",
+				Path:          "^/.*$",
 				Service:       "http://10.0.0.1:80",
 				OriginRequest: nil,
 			},
@@ -60,6 +63,7 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 					Hostname:      "ssh.example.com",
 					ServiceTarget: "ssh://10.0.0.1:22",
 					PathPrefix:    "/*",
+					PathType:      exposure.PathTypePrefix,
 					IsDeleted:     false,
 				},
 			},
@@ -79,6 +83,7 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 					Hostname:      "tcp.example.com",
 					ServiceTarget: "tcp://10.0.0.1:5432",
 					PathPrefix:    "/",
+					PathType:      exposure.PathTypePrefix,
 					IsDeleted:     false,
 				},
 			},
@@ -91,19 +96,80 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "contains path",
+			name: "prefix path",
 			args: args{
 				ctx: context.Background(),
 				exposure: exposure.Exposure{
 					Hostname:      "ingress.example.com",
 					ServiceTarget: "http://10.0.0.1:80",
 					PathPrefix:    "/prefix",
+					PathType:      exposure.PathTypePrefix,
 					IsDeleted:     false,
 				},
 			},
 			want: &cloudflare.UnvalidatedIngressRule{
 				Hostname:      "ingress.example.com",
-				Path:          "/prefix",
+				Path:          "^/prefix(/.*)?$",
+				Service:       "http://10.0.0.1:80",
+				OriginRequest: nil,
+			},
+			wantErr: false,
+		},
+		{
+			name: "exact path",
+			args: args{
+				ctx: context.Background(),
+				exposure: exposure.Exposure{
+					Hostname:      "ingress.example.com",
+					ServiceTarget: "http://10.0.0.1:80",
+					PathPrefix:    "/openapi.json",
+					PathType:      exposure.PathTypeExact,
+					IsDeleted:     false,
+				},
+			},
+			want: &cloudflare.UnvalidatedIngressRule{
+				Hostname:      "ingress.example.com",
+				Path:          `^/openapi\.json$`,
+				Service:       "http://10.0.0.1:80",
+				OriginRequest: nil,
+			},
+			wantErr: false,
+		},
+		{
+			name: "prefix path with trailing slash normalizes",
+			args: args{
+				ctx: context.Background(),
+				exposure: exposure.Exposure{
+					Hostname:      "ingress.example.com",
+					ServiceTarget: "http://10.0.0.1:80",
+					PathPrefix:    "/api/",
+					PathType:      exposure.PathTypePrefix,
+					IsDeleted:     false,
+				},
+			},
+			want: &cloudflare.UnvalidatedIngressRule{
+				Hostname:      "ingress.example.com",
+				Path:          "^/api(/.*)?$",
+				Service:       "http://10.0.0.1:80",
+				OriginRequest: nil,
+			},
+			wantErr: false,
+		},
+		{
+			name: "prefix path with regex metacharacters is escaped",
+			args: args{
+				ctx: context.Background(),
+				exposure: exposure.Exposure{
+					Hostname:      "ingress.example.com",
+					ServiceTarget: "http://10.0.0.1:80",
+					PathPrefix:    "/v1.0",
+					PathType:      exposure.PathTypePrefix,
+					IsDeleted:     false,
+				},
+			},
+			want: &cloudflare.UnvalidatedIngressRule{
+				Hostname:      "ingress.example.com",
+				Path:          `^/v1\.0(/.*)?$`,
 				Service:       "http://10.0.0.1:80",
 				OriginRequest: nil,
 			},
@@ -117,13 +183,14 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 					Hostname:       "ingress.example.com",
 					ServiceTarget:  "http://10.0.0.1:80",
 					PathPrefix:     "/prefix",
+					PathType:       exposure.PathTypePrefix,
 					IsDeleted:      false,
 					HTTPHostHeader: ptr.To("foo.internal"),
 				},
 			},
 			want: &cloudflare.UnvalidatedIngressRule{
 				Hostname: "ingress.example.com",
-				Path:     "/prefix",
+				Path:     "^/prefix(/.*)?$",
 				Service:  "http://10.0.0.1:80",
 				OriginRequest: &cloudflare.OriginRequestConfig{
 					HTTPHostHeader: ptr.To("foo.internal"),
@@ -139,13 +206,14 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 					Hostname:         "ingress.example.com",
 					ServiceTarget:    "https://10.0.0.1:443",
 					PathPrefix:       "/",
+					PathType:         exposure.PathTypePrefix,
 					IsDeleted:        false,
 					OriginServerName: ptr.To("bar.internal"),
 				},
 			},
 			want: &cloudflare.UnvalidatedIngressRule{
 				Hostname: "ingress.example.com",
-				Path:     "/",
+				Path:     "^/.*$",
 				Service:  "https://10.0.0.1:443",
 				OriginRequest: &cloudflare.OriginRequestConfig{
 					NoTLSVerify:      ptr.To(true),
@@ -161,6 +229,7 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 					Hostname:         "ingress.example.com",
 					ServiceTarget:    "https://10.0.0.1:443",
 					PathPrefix:       "/",
+					PathType:         exposure.PathTypePrefix,
 					IsDeleted:        false,
 					HTTPHostHeader:   ptr.To("foo.internal"),
 					OriginServerName: ptr.To("bar.internal"),
@@ -168,7 +237,7 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 			},
 			want: &cloudflare.UnvalidatedIngressRule{
 				Hostname: "ingress.example.com",
-				Path:     "/",
+				Path:     "^/.*$",
 				Service:  "https://10.0.0.1:443",
 				OriginRequest: &cloudflare.OriginRequestConfig{
 					NoTLSVerify:      ptr.To(true),
@@ -184,12 +253,13 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 					Hostname:      "ingress.example.com",
 					ServiceTarget: "https://10.0.0.1:443",
 					PathPrefix:    "/",
+					PathType:      exposure.PathTypePrefix,
 					IsDeleted:     false,
 				},
 			},
 			want: &cloudflare.UnvalidatedIngressRule{
 				Hostname: "ingress.example.com",
-				Path:     "/",
+				Path:     "^/.*$",
 				Service:  "https://10.0.0.1:443",
 				OriginRequest: &cloudflare.OriginRequestConfig{
 					NoTLSVerify: ptr.To(true),
@@ -203,13 +273,14 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 					Hostname:              "ingress.example.com",
 					ServiceTarget:         "https://10.0.0.1:443",
 					PathPrefix:            "/",
+					PathType:              exposure.PathTypePrefix,
 					IsDeleted:             false,
 					ProxySSLVerifyEnabled: ptr.To(false),
 				},
 			},
 			want: &cloudflare.UnvalidatedIngressRule{
 				Hostname: "ingress.example.com",
-				Path:     "/",
+				Path:     "^/.*$",
 				Service:  "https://10.0.0.1:443",
 				OriginRequest: &cloudflare.OriginRequestConfig{
 					NoTLSVerify: ptr.To(true),
@@ -223,13 +294,14 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 					Hostname:              "ingress.example.com",
 					ServiceTarget:         "https://10.0.0.1:443",
 					PathPrefix:            "/",
+					PathType:              exposure.PathTypePrefix,
 					IsDeleted:             false,
 					ProxySSLVerifyEnabled: ptr.To(true),
 				},
 			},
 			want: &cloudflare.UnvalidatedIngressRule{
 				Hostname: "ingress.example.com",
-				Path:     "/",
+				Path:     "^/.*$",
 				Service:  "https://10.0.0.1:443",
 				OriginRequest: &cloudflare.OriginRequestConfig{
 					NoTLSVerify: ptr.To(false),
@@ -243,6 +315,7 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 					Hostname:               "ingress.example.com",
 					ServiceTarget:          "http://10.0.0.1:80",
 					PathPrefix:             "/",
+					PathType:               exposure.PathTypePrefix,
 					IsDeleted:              false,
 					ConnectTimeout:         ptr.To(30 * time.Second),
 					TLSTimeout:             ptr.To(10 * time.Second),
@@ -255,7 +328,7 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 			},
 			want: &cloudflare.UnvalidatedIngressRule{
 				Hostname: "ingress.example.com",
-				Path:     "/",
+				Path:     "^/.*$",
 				Service:  "http://10.0.0.1:80",
 				OriginRequest: &cloudflare.OriginRequestConfig{
 					ConnectTimeout:         &cloudflare.TunnelDuration{Duration: 30 * time.Second},
@@ -275,6 +348,7 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 					Hostname:      "ingress.example.com",
 					ServiceTarget: "https://10.0.0.1:443",
 					PathPrefix:    "/",
+					PathType:      exposure.PathTypePrefix,
 					IsDeleted:     false,
 					NoTLSVerify:   ptr.To(false),
 					HTTP2Origin:   ptr.To(true),
@@ -282,7 +356,7 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 			},
 			want: &cloudflare.UnvalidatedIngressRule{
 				Hostname: "ingress.example.com",
-				Path:     "/",
+				Path:     "^/.*$",
 				Service:  "https://10.0.0.1:443",
 				OriginRequest: &cloudflare.OriginRequestConfig{
 					NoTLSVerify: ptr.To(false),
@@ -297,13 +371,14 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 					Hostname:      "ingress.example.com",
 					ServiceTarget: "http://10.0.0.1:80",
 					PathPrefix:    "/",
+					PathType:      exposure.PathTypePrefix,
 					IsDeleted:     false,
 					NoTLSVerify:   ptr.To(true),
 				},
 			},
 			want: &cloudflare.UnvalidatedIngressRule{
 				Hostname: "ingress.example.com",
-				Path:     "/",
+				Path:     "^/.*$",
 				Service:  "http://10.0.0.1:80",
 				OriginRequest: &cloudflare.OriginRequestConfig{
 					NoTLSVerify: ptr.To(true),
@@ -320,6 +395,65 @@ func Test_fromExposureToCloudflareIngress(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("fromExposureToCloudflareIngress() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_buildCloudflarePathRegex(t *testing.T) {
+	type args struct {
+		path       string
+		pathType   exposure.PathType
+		matches    []string
+		mismatches []string
+	}
+	tests := []args{
+		{
+			path:     "/api",
+			pathType: exposure.PathTypePrefix,
+			matches:  []string{"/api", "/api/v1/foo", "/api/"},
+			mismatches: []string{
+				"/apiary",
+				"/assets/api-C-hkNku6.js",
+				"/foo/api-bar.js",
+				"/assets/foo/api/bar.js",
+			},
+		},
+		{
+			path:     "/",
+			pathType: exposure.PathTypePrefix,
+			matches:  []string{"/anything/at/all", "/"},
+		},
+		{
+			path:     "/api/",
+			pathType: exposure.PathTypePrefix,
+			matches:  []string{"/api", "/api/v1"},
+		},
+		{
+			path:       "/openapi.json",
+			pathType:   exposure.PathTypeExact,
+			matches:    []string{"/openapi.json"},
+			mismatches: []string{"/openapiXjson", "/openapi.json/extra"},
+		},
+		{
+			path:       "/api",
+			pathType:   exposure.PathTypeExact,
+			matches:    []string{"/api"},
+			mismatches: []string{"/api/v1", "/apiary"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s path=%s", tt.pathType, tt.path), func(t *testing.T) {
+			re := regexp.MustCompile(buildCloudflarePathRegex(tt.path, tt.pathType))
+			for _, requestPath := range tt.matches {
+				if !re.MatchString(requestPath) {
+					t.Errorf("expected %q (regex %q) to match %q, it did not", tt.path, re.String(), requestPath)
+				}
+			}
+			for _, requestPath := range tt.mismatches {
+				if re.MatchString(requestPath) {
+					t.Errorf("expected %q (regex %q) to NOT match %q, it did", tt.path, re.String(), requestPath)
+				}
 			}
 		})
 	}

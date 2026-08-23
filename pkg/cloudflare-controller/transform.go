@@ -3,6 +3,7 @@ package cloudflarecontroller
 import (
 	"context"
 	"reflect"
+	"regexp"
 	"strings"
 
 	"github.com/STRRL/cloudflare-tunnel-ingress-controller/pkg/exposure"
@@ -24,12 +25,35 @@ func fromExposureToCloudflareIngress(ctx context.Context, exposure exposure.Expo
 	// path based routing only applies to http(s), non http protocols
 	// like ssh, rdp or tcp must not carry a path in the tunnel rule
 	if strings.HasPrefix(exposure.ServiceTarget, "http://") || strings.HasPrefix(exposure.ServiceTarget, "https://") {
-		result.Path = exposure.PathPrefix
+		result.Path = buildCloudflarePathRegex(exposure.PathPrefix, exposure.PathType)
 	}
 
 	result.OriginRequest = fromExposureToOriginRequest(exposure)
 
 	return &result, nil
+}
+
+// buildCloudflarePathRegex turns a Kubernetes Ingress path + pathType into the
+// anchored regex cloudflared expects in UnvalidatedIngressRule.Path. cloudflared
+// matches Path as an unanchored regexp, so an unanchored literal like "/api" would
+// also match "/apiary" or "/assets/api-x.js" — every branch here anchors with ^/$
+// and escapes metacharacters via regexp.QuoteMeta.
+func buildCloudflarePathRegex(path string, pathType exposure.PathType) string {
+	if pathType == exposure.PathTypeExact {
+		return "^" + regexp.QuoteMeta(path) + "$"
+	}
+
+	// Prefix (and ImplementationSpecific, mapped to Prefix upstream).
+	if path == "/" {
+		return "^/.*$"
+	}
+
+	// Normalize a single trailing slash so "/api/" behaves like "/api".
+	trimmed := strings.TrimSuffix(path, "/")
+
+	// Element-wise Prefix semantics: match the segment exactly, or the segment
+	// followed by "/" and more path.
+	return "^" + regexp.QuoteMeta(trimmed) + "(/.*)?$"
 }
 
 // fromExposureToOriginRequest assembles the originRequest settings of a rule,

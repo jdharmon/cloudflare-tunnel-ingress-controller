@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/STRRL/cloudflare-tunnel-ingress-controller/pkg/controller"
+	exposuremodel "github.com/STRRL/cloudflare-tunnel-ingress-controller/pkg/exposure"
 	"github.com/STRRL/cloudflare-tunnel-ingress-controller/test/fixtures"
 	"github.com/go-logr/stdr"
 	. "github.com/onsi/ginkgo/v2"
@@ -109,10 +110,11 @@ var _ = Describe("transform ingress to exposure", func() {
 		expectedTarget := fmt.Sprintf("http://%s.%s.svc.%s:2333", service.Name, ns, testClusterDomain)
 		Expect(exposure[0].ServiceTarget).Should(Equal(expectedTarget))
 		Expect(exposure[0].PathPrefix).Should(Equal("/"))
+		Expect(exposure[0].PathType).Should(Equal(exposuremodel.PathTypePrefix))
 		Expect(exposure[0].IsDeleted).Should(BeFalse())
 	})
 
-	It("should fail fast with PathType Exact", func() {
+	It("should resolve ingress with PathType Exact", func() {
 		// prepare
 		By("preparing namespace")
 		namespaceFixtures := fixtures.NewKubernetesNamespaceFixtures(IntegrationTestNamespace, kubeClient)
@@ -186,8 +188,11 @@ var _ = Describe("transform ingress to exposure", func() {
 
 		By("transforming ingress to exposure")
 		exposure, err := controller.FromIngressToExposure(ctx, logger, kubeClient, recorder, ingress, testClusterDomain)
-		Expect(err).Should(HaveOccurred())
-		Expect(exposure).Should(BeNil())
+		Expect(err).ShouldNot(HaveOccurred())
+		Expect(exposure).ShouldNot(BeNil())
+		Expect(exposure).Should(HaveLen(1))
+		Expect(exposure[0].PathPrefix).Should(Equal("/"))
+		Expect(exposure[0].PathType).Should(Equal(exposuremodel.PathTypeExact))
 	})
 
 	It("should fail fast with PathType ImplementationSpecific", func() {

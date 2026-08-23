@@ -2,9 +2,11 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/STRRL/cloudflare-tunnel-ingress-controller/pkg/exposure"
 	"github.com/go-logr/logr"
 	"k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -236,5 +238,73 @@ func TestFromIngressToExposureNilHTTPKeepsOtherRules(t *testing.T) {
 	}
 	if exposures[0].Hostname != "app.example.com" {
 		t.Fatalf("expected exposure for app.example.com, got %s", exposures[0].Hostname)
+	}
+}
+
+func TestFromIngressToExposurePathType(t *testing.T) {
+	for _, tc := range []struct {
+		k8sPathType  networkingv1.PathType
+		wantExposure exposure.PathType
+	}{
+		{k8sPathType: networkingv1.PathTypePrefix, wantExposure: exposure.PathTypePrefix},
+		{k8sPathType: networkingv1.PathTypeExact, wantExposure: exposure.PathTypeExact},
+		{k8sPathType: networkingv1.PathTypeImplementationSpecific, wantExposure: exposure.PathTypePrefix},
+	} {
+		t.Run(string(tc.k8sPathType), func(t *testing.T) {
+			serviceName := fmt.Sprintf("my-app-%s", strings.ToLower(string(tc.k8sPathType)))
+			pathType := tc.k8sPathType
+			ingress := networkingv1.Ingress{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "default",
+					Name:      "path-type-ingress",
+				},
+				Spec: networkingv1.IngressSpec{
+					Rules: []networkingv1.IngressRule{
+						{
+							Host: "app.example.com",
+							IngressRuleValue: networkingv1.IngressRuleValue{
+								HTTP: &networkingv1.HTTPIngressRuleValue{
+									Paths: []networkingv1.HTTPIngressPath{
+										{
+											Path:     "/",
+											PathType: &pathType,
+											Backend: networkingv1.IngressBackend{
+												Service: &networkingv1.IngressServiceBackend{
+													Name: serviceName,
+													Port: networkingv1.ServiceBackendPort{Number: 80},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			service := v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "default",
+					Name:      serviceName,
+				},
+				Spec: v1.ServiceSpec{
+					ClusterIP: "10.0.0.1",
+					Ports:     []v1.ServicePort{{Port: 80}},
+				},
+			}
+			kubeClient := fake.NewClientBuilder().WithObjects(&service).Build()
+
+			exposures, err := FromIngressToExposure(context.Background(), logr.Discard(), kubeClient, record.NewFakeRecorder(8), ingress, "cluster.local")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(exposures) != 1 {
+				t.Fatalf("expected exactly one exposure, got %d", len(exposures))
+			}
+			if exposures[0].PathType != tc.wantExposure {
+				t.Fatalf("expected PathType %q for k8s pathType %q, got %q", tc.wantExposure, tc.k8sPathType, exposures[0].PathType)
+			}
+		})
 	}
 }

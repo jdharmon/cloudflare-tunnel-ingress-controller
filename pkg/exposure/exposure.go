@@ -2,6 +2,20 @@ package exposure
 
 import "time"
 
+// PathType describes how PathPrefix should be matched against a request path.
+type PathType string
+
+const (
+	// PathTypePrefix matches a request path element-wise: PathPrefix must match
+	// a whole path segment, or be followed by "/" and more segments. Also used
+	// for Kubernetes' ImplementationSpecific pathType, which this controller
+	// treats identically to Prefix. This is also the zero value, so an
+	// Exposure{} without PathType set behaves as Prefix.
+	PathTypePrefix PathType = "Prefix"
+	// PathTypeExact requires the request path to match PathPrefix exactly.
+	PathTypeExact PathType = "Exact"
+)
+
 // Exposure is the minimal information for exposing a service.
 type Exposure struct {
 	// Hostname is the domain name to expose the service, eg. hello.strrl.dev
@@ -10,6 +24,8 @@ type Exposure struct {
 	ServiceTarget string
 	// PathPrefix is the path prefix to expose the service, eg. /hello
 	PathPrefix string
+	// PathType controls how PathPrefix is matched, see the PathType* constants.
+	PathType PathType
 	// IsDeleted is the flag to indicate if the exposure is deleted.
 	IsDeleted bool
 	// ProxySSLVerifyEnabled is the flag to indicate if the exposure should skip TLS verification.
